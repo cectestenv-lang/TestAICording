@@ -41,6 +41,8 @@ class VideoMonitor:
         min_area_ratio: float,
         max_area_ratio: float,
         max_missing_frames: int,
+        max_rois_per_detect: int,
+        low_motion_threshold: float,
     ) -> None:
         self.model = FastSAM(model_path)
         self.conf = conf
@@ -50,6 +52,8 @@ class VideoMonitor:
         self.min_area_ratio = min_area_ratio
         self.max_area_ratio = max_area_ratio
         self.max_missing_frames = max_missing_frames
+        self.max_rois_per_detect = max(1, max_rois_per_detect)
+        self.low_motion_threshold = low_motion_threshold
 
         self.tracks: Dict[int, Track] = {}
         self.next_track_id = 1
@@ -85,30 +89,28 @@ class VideoMonitor:
     def _flow_update_tracks(self, prev_gray: np.ndarray, gray: np.ndarray) -> None:
         if not self.tracks:
             return
-        flow = cv2.calcOpticalFlowFarneback(
-            prev_gray,
-            gray,
-            None,
-            pyr_scale=0.5,
-            levels=3,
-            winsize=15,
-            iterations=3,
-            poly_n=5,
-            poly_sigma=1.2,
-            flags=0,
-        )
+        centers = []
+        track_ids = []
+        for tid, tr in self.tracks.items():
+            x1, y1, x2, y2 = tr.bbox
+            centers.append([[0.5 * (x1 + x2), 0.5 * (y1 + y2)]])
+            track_ids.append(tid)
+        if not centers:
+            return
+        p0 = np.array(centers, dtype=np.float32)
+        p1, st, _ = cv2.calcOpticalFlowPyrLK(prev_gray, gray, p0, None)
+        if p1 is None or st is None:
+            return
         h, w = gray.shape[:2]
-        for tr in self.tracks.values():
+        for tid, pt1, ok in zip(track_ids, p1, st):
+            if ok[0] != 1:
+                continue
+            tr = self.tracks[tid]
             x1, y1, x2, y2 = tr.bbox.astype(int)
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w - 1, x2), min(h - 1, y2)
-            if x2 <= x1 or y2 <= y1:
-                continue
-            local = flow[y1:y2, x1:x2]
-            if local.size == 0:
-                continue
-            dx = float(np.median(local[..., 0]))
-            dy = float(np.median(local[..., 1]))
+            cx0, cy0 = 0.5 * (x1 + x2), 0.5 * (y1 + y2)
+            cx1, cy1 = pt1[0]
+            dx = float(cx1 - cx0)
+            dy = float(cy1 - cy0)
             tr.bbox = np.array(
                 [
                     np.clip(x1 + dx, 0, w - 1),
@@ -118,6 +120,12 @@ class VideoMonitor:
                 ],
                 dtype=np.float32,
             )
+
+    @staticmethod
+    def _select_rois(rois: List[Tuple[int, int, int, int]], limit: int) -> List[Tuple[int, int, int, int]]:
+        if len(rois) <= limit:
+            return rois
+        return sorted(rois, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]), reverse=True)[:limit]
 
     def _segment_roi(self, frame: np.ndarray, roi: Tuple[int, int, int, int]) -> List[np.ndarray]:
         x1, y1, x2, y2 = roi
@@ -158,10 +166,14 @@ class VideoMonitor:
                 h, w = gray.shape[:2]
                 frame_area = float(h * w)
 
+                mean_motion = 0.0
                 if prev_gray is not None:
+                    mean_motion = float(cv2.absdiff(prev_gray, gray).mean())
                     self._flow_update_tracks(prev_gray, gray)
 
                 need_detect = frame_idx % self.detect_interval == 0
+                if mean_motion < self.low_motion_threshold and self.tracks:
+                    need_detect = False
                 detections: List[np.ndarray] = []
                 if need_detect:
                     if prev_gray is None:
@@ -170,6 +182,7 @@ class VideoMonitor:
                         rois = self._changed_rois(prev_gray, gray)
                         if not rois:
                             rois = []
+                    rois = self._select_rois(rois, self.max_rois_per_detect)
                     for roi in rois:
                         detections.extend(self._segment_roi(frame, roi))
 
@@ -274,6 +287,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--detect-interval", type=int, default=3, help="セグメンテーション間隔")
     p.add_argument("--diff-threshold", type=int, default=18, help="差分2値化しきい値")
     p.add_argument("--max-missing", type=int, default=20, help="追跡ロスト判定フレーム数")
+    p.add_argument("--max-rois", type=int, default=6, help="1回の検出で処理するROIの最大数")
+    p.add_argument("--low-motion-threshold", type=float, default=3.0, help="低動き時に再検出を抑制する閾値")
     return p.parse_args()
 
 
@@ -288,6 +303,8 @@ def main() -> None:
         min_area_ratio=1 / 100,
         max_area_ratio=1 / 2,
         max_missing_frames=args.max_missing,
+        max_rois_per_detect=args.max_rois,
+        low_motion_threshold=args.low_motion_threshold,
     )
     log_path = monitor.monitor(args.video, args.output)
     print(f"monitor log: {log_path}")
