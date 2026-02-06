@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """動画を FastSAM で監視し、時系列ログと新規物体画像を出力する。"""
 
 from __future__ import annotations
@@ -178,7 +177,7 @@ class VideoMonitor:
                     filtered = []
                     for b in detections:
                         area = max(0.0, (b[2] - b[0]) * (b[3] - b[1]))
-                        ratio = area / frame_area
+                        ratio = float(area / frame_area)
                         if self.min_area_ratio <= ratio <= self.max_area_ratio:
                             filtered.append((b, ratio))
 
@@ -195,7 +194,7 @@ class VideoMonitor:
                         if best_id is not None and best_iou >= 0.3:
                             tr = self.tracks[best_id]
                             tr.bbox = b
-                            tr.area_ratio = ratio
+                            tr.area_ratio = float(ratio)
                             tr.last_frame = frame_idx
                             matched_track_ids.add(best_id)
                             record = {
@@ -203,7 +202,7 @@ class VideoMonitor:
                                 "event": "update",
                                 "track_id": best_id,
                                 "bbox": [float(x) for x in b],
-                                "area_ratio": ratio,
+                                "area_ratio": float(ratio),
                                 "image_file": tr.image_file,
                             }
                             fw.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -211,7 +210,7 @@ class VideoMonitor:
                             tid = self.next_track_id
                             self.next_track_id += 1
                             label = f"object_{tid}"
-                            tr = Track(tid, b, ratio, frame_idx, frame_idx, label=label)
+                            tr = Track(tid, b, float(ratio), frame_idx, frame_idx, label=label)
 
                             x1, y1, x2, y2 = b.astype(int)
                             x1, y1 = max(0, x1), max(0, y1)
@@ -231,7 +230,7 @@ class VideoMonitor:
                                 "track_id": tid,
                                 "label": label,
                                 "bbox": [float(x) for x in b],
-                                "area_ratio": ratio,
+                                "area_ratio": float(ratio),
                                 "image_file": tr.image_file,
                             }
                             fw.write(json.dumps(record, ensure_ascii=False) + "\n")
