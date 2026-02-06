@@ -443,10 +443,14 @@ def Do_detector(img2, ex_temp_img1, ex_temp_img2, TemplateInfo, counter, Imageca
         TemplateInfo.detectorNo not in ImagecacheImp.ImagecacheL[ex_temp_img2].Global_kp2
         or ImagecacheImp.ImagecacheL[ex_temp_img2].Global_Size[TemplateInfo.detectorNo] != ex_temp_img2
     ):
-        (
-            ImagecacheImp.ImagecacheL[ex_temp_img2].Global_kp2[TemplateInfo.detectorNo],
-            ImagecacheImp.ImagecacheL[ex_temp_img2].Global_des2[TemplateInfo.detectorNo],
-        ) = detector.detectAndCompute(gray2, None)
+        try:
+            (
+                ImagecacheImp.ImagecacheL[ex_temp_img2].Global_kp2[TemplateInfo.detectorNo],
+                ImagecacheImp.ImagecacheL[ex_temp_img2].Global_des2[TemplateInfo.detectorNo],
+            ) = detector.detectAndCompute(gray2, None)
+        except cv2.error as exc:
+            print(f"detectAndCompute failed: {exc}")
+            return None, None, None, None
         ImagecacheImp.ImagecacheL[ex_temp_img2].Global_Size[TemplateInfo.detectorNo] = ex_temp_img2
 
     cv2.destroyAllWindows()
@@ -625,6 +629,8 @@ def Do_detector_main(img2, TemplateInfo, counter, ImagecacheImp, TemplateResultL
     ex_temp_imgSize = getExpSize(TemplateInfo.Image)
 
     kp1, des1, kp2, des2 = Do_detector(img2, ex_temp_imgSize, ex_temp_imgSize, TemplateInfo, counter, ImagecacheImp)
+    if kp1 is None or des1 is None or kp2 is None or des2 is None:
+        return
     img2_exp = cv2.resize(img2, None, interpolation=cv2.INTER_LINEAR, fx=ex_temp_imgSize, fy=ex_temp_imgSize)
     img2_exp = cv2.cvtColor(img2_exp, cv2.COLOR_BGR2GRAY)
 
@@ -944,7 +950,8 @@ def save_all_frames(video_path, dir_path, video_red, basename, TemplateList, ext
     whiteArealimit = 3
     threadList = []
     threadn = cv2.getNumberOfCPUs()
-    executor = ThreadPoolExecutor(max_workers=threadn - 2)
+    max_workers = max(1, min(threadn - 2, 4))
+    executor = ThreadPoolExecutor(max_workers=max_workers)
     pending = []
 
     while True:
